@@ -29,15 +29,22 @@ def inv_index(root):
     
     doc_count = 0
     for s, _, fs in os.walk(root):
-        for f in fs:
+        for file in fs:
             #print(f)
-
-            doc_path = os.path.join(s, f)
+            data = None
+            doc_path = os.path.join(s, file)
             doc_id = os.path.relpath(doc_path, root)
+            with open (doc_path, "r") as f:
+                data = json.load(f)
+            #print(data)
+            #print(data["content"])
+            #print(data["url"])
             doc_text = get_html(doc_path)
+            #print(doc_text)
             tokens = tokenize(doc_text)
+            #print(tokens)
             tf = get_token_freq(tokens)
-
+            #print(tf)
             for t, f in tf.items():
                 inverted_index[t].append({"id" : doc_id, "frq" : f})
             
