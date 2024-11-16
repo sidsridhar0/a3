@@ -2,8 +2,13 @@ import os
 import json
 import re
 from bs4 import BeautifulSoup
+import time
 
+#for default values in dict
 from collections import defaultdict
+
+#multithreading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 STOP_WORDS = [
     "a", "about", "above", "after", "again", "against", "all", "am", "an", "and", 
@@ -50,34 +55,40 @@ def get_token_freq(tokens):
         freq[t] += 1
     return freq
 
-def inv_index(root):
+def process_file(doc_path, root):
+    doc_id = os.path.relpath(doc_path, root)
+    doc_text = get_html(doc_path)
+    tokens = tokenize(doc_text)
+    tf = get_token_freq(tokens)
+
+    local_index = defaultdict(list)
+    for t, f in tf.items():
+        if t in STOP_WORDS:
+            continue
+        local_index[t].append({"id" : doc_id, "frq" : f})
+    return local_index
+
+def merge_indices(global_index, local_index):
+    for token, postings in local_index.items():
+        global_index[token].extend(postings)
+
+def inv_index(root, max_workers=4):
     doc_count = 0
+    all_files = []
     for s, _, fs in os.walk(root):
         for file in fs:
+            all_files.append(os.path.join(s, file))
 
-            if doc_count % 100 == 0:
-                print(doc_count)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(process_file, file_path, root): file_path for file_path in all_files}
 
-            data = None
-            doc_path = os.path.join(s, file)
-            doc_id = os.path.relpath(doc_path, root)
-            with open (doc_path, "r") as f:
-                data = json.load(f)
-            #print(data)
-            #print(data["content"])
-            #print(data["url"])
-            doc_text = get_html(doc_path)
-            #print(doc_text)
-            tokens = tokenize(doc_text)
-            #print(tokens)
-            tf = get_token_freq(tokens)
-            #print(tf)
-            for t, f in tf.items():
-                if t in STOP_WORDS:  # Skip stop words
-                    continue
-                inverted_index[t].append({"id" : doc_id, "frq" : f})
-            
+        for future in as_completed(futures):
+            local_index = future.result()
+            merge_indices(inverted_index, local_index)
             doc_count += 1
+            if doc_count % 100 == 0:
+                print(f"Processed {doc_count} files")
+    
     return doc_count
 
 def make_file(file_name="inv_idx.json"):
@@ -86,11 +97,16 @@ def make_file(file_name="inv_idx.json"):
 
 
 if __name__ == "__main__":
-    doc_count = inv_index(ROOT_DIR)
-    print("making file")
+    print("Starting indexing...")
+    index_time = time.time()
+    doc_count = inv_index(ROOT_DIR, max_workers=4)
+    save_time = time.time()
+    print("Indexing time:", save_time - index_time)
+    print("Indexing complete. Saving index to file...")
     make_file()
-    
+    end_time = time.time()
+    print("Save time:", end_time - save_time)
     #final report
-    print("number of unique tokens: ", len(inverted_index))
-    print("Total size of index on disk: ", os.path.getsize("inv_idx.json") / 1024)
-    print("Document Count: ", doc_count)
+    print("Number of unique tokens:", len(inverted_index))
+    print("Total size of index on disk:", os.path.getsize("inv_idx.json") / 1024, "KB")
+    print("Document Count:", doc_count)
