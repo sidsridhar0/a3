@@ -1,0 +1,11 @@
+FINAL REPORT FOR A3M1:
+
+ANALYST:
+Number of unique tokens: 23073
+Total size of index on disk: 93854.1025390625 KB
+Document Count: 1988
+
+DEV:
+Number of unique tokens: 1454674
+Total size of index on disk: 2053905.6279296875 KB
+Document Count: 55393
