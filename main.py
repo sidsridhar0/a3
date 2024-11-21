@@ -2,13 +2,12 @@ import os
 import json
 import re
 from operator import itemgetter
-
 from bs4 import BeautifulSoup
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Search terms with multi-word phrases
+# Search terms including multi-word phrases
 SEARCH_TERMS = [
     "cristina lopes",
     "machine learning",
@@ -24,7 +23,8 @@ inverted_index = defaultdict(list)
 def calculate_frequency(terms, index, top_n=5):
     # To store the top results for each search term
     top_urls = defaultdict(list)
-
+    # make sure all terms are lowercase
+    terms = [term.lower() for term in terms]
     # For each search term, get the documents where it appears
     for term in terms:
         if term in index:
@@ -42,7 +42,8 @@ def tokenize(text):
     phrases = [
         "cristina lopes",
         "machine learning",
-        "master of software engineering"
+        "master of software engineering",
+        "acm"
     ]
 
     # First, tokenize based on whitespace and punctuation
