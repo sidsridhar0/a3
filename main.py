@@ -1,12 +1,14 @@
 import os
 import json
 import re
+from operator import itemgetter
+
 from bs4 import BeautifulSoup
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# The search terms (with multi-word phrases)
+# Search terms with multi-word phrases
 SEARCH_TERMS = [
     "cristina lopes",
     "machine learning",
@@ -15,8 +17,24 @@ SEARCH_TERMS = [
 ]
 
 # For default values in dict
-ROOT_DIR = "ANALYST"
+ROOT_DIR = "DEV"
 inverted_index = defaultdict(list)
+
+
+def calculate_frequency(terms, index, top_n=5):
+    # To store the top results for each search term
+    top_urls = defaultdict(list)
+
+    # For each search term, get the documents where it appears
+    for term in terms:
+        if term in index:
+            postings = index[term]
+            # Sort by frequency (highest first)
+            sorted_postings = sorted(postings, key=itemgetter('frq'), reverse=True)
+            # Get the top N URLs
+            top_urls[term] = sorted_postings[:top_n]
+
+    return top_urls
 
 
 def tokenize(text):
@@ -96,7 +114,7 @@ def make_file(file_name="inv_idx.json"):
 def search_terms(terms, index):
     results = defaultdict(list)
 
-    # Convert all search terms to lowercase for case-insensitive comparison
+    # Convert all search terms to lowercase
     terms = [term.lower() for term in terms]
 
     # Search the index for the terms
@@ -139,6 +157,11 @@ if __name__ == "__main__":
 
     # Final report
     print("\nFinal Report:")
-    print(f"Number of unique tokens: {len(inverted_index)}")
-    print(f"Total size of index on disk: {os.path.getsize('inv_idx.json') / 1024} KB")
-    print(f"Document Count: {doc_count}")
+    # Get the top URLs for each search term
+    print("\nTop URLs for each query:")
+    top_urls = calculate_frequency(SEARCH_TERMS, inverted_index)
+
+    for term, postings in top_urls.items():
+        print(f"\nTop 5 URLs for '{term}':")
+        for posting in postings:
+            print(f"URL: {posting['id']} (Frequency: {posting['frq']})")
