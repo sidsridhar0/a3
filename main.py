@@ -1,48 +1,46 @@
-import math
 import os
 import json
-import re
-from operator import itemgetter
-from bs4 import BeautifulSoup
 import time
+import re
+import logging
 from collections import defaultdict
+from operator import itemgetter
+from flask import Flask, request, jsonify, render_template
+from threading import Thread, Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from bs4 import BeautifulSoup
+from math import log  # Direct import of log function
 
-# implement tf-idf: TF(t,d)×IDF(t)
+app = Flask(__name__)
 
-
-# For default values in dict
-ROOT_DIR = "ANALYST"
+ROOT_DIR = "DEV"
 inverted_index = defaultdict(list)
+index_lock = Lock()  # Lock for thread-safe access to the inverted index
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
 
 
 def calculate_frequency_tfidf(terms, index, doc_count, top_n=5):
-    # To store the top results for each search term
     top_urls = defaultdict(list)
-    # make sure all terms are lowercase
     terms = [term.lower() for term in terms]
 
-    idf = {term: math.log(doc_count / (len(index.get(term, [])) + 1)) for term in terms}
-    # For each search term, get the documents where it appears
+    # Calculate IDF for each term
+    idf = {term: log(doc_count / (len(index.get(term, [])) + 1)) for term in terms}
     for term in terms:
         if term in index:
             postings = index[term]
-
             for posting in postings:
                 tf = posting['frq']
                 posting['tf-idf'] = tf * idf[term]
-            # Sort by frequency (highest first)
             sorted_postings = sorted(postings, key=itemgetter('tf-idf'), reverse=True)
-            # Get the top N URLs
             top_urls[term] = sorted_postings[:top_n]
 
     return top_urls
 
 
 def tokenize(text):
-    # Tokenize based on whitespace, punctuation, and mult-word phrases
     tokens = re.findall(r'\"(.*?)\"|\b\w+\b', text.lower())
-
     return tokens
 
 
@@ -72,8 +70,10 @@ def process_file(doc_path, root):
 
 
 def merge_indices(global_index, local_index):
-    for token, postings in local_index.items():
-        global_index[token].extend(postings)
+    # Use lock to ensure thread-safe modification of global index
+    with index_lock:
+        for token, postings in local_index.items():
+            global_index[token].extend(postings)
 
 
 def inv_index(root, max_workers=4):
@@ -85,13 +85,12 @@ def inv_index(root, max_workers=4):
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(process_file, file_path, root): file_path for file_path in all_files}
-
         for future in as_completed(futures):
             local_index = future.result()
             merge_indices(inverted_index, local_index)
             doc_count += 1
             if doc_count % 100 == 0:
-                print(f"Processed {doc_count} files")
+                logging.info(f"Processed {doc_count} files")
 
     return doc_count
 
@@ -101,64 +100,71 @@ def make_file(file_name="inv_idx.json"):
         json.dump(inverted_index, f, indent=4)
 
 
-def search_terms(terms, index):
-    results = defaultdict(list)
-    doc_count = defaultdict(list)
-
-    # Convert all search terms to lowercase
-    terms = [term.lower() for term in terms]
-
-    # Search the index for the terms
-    for term in terms:
-        if term in index:
-            postings = index[term]
-            results[term] = index[term]
-            doc_count[term] = len(postings)
-
-    return results, doc_count
-
-
-def print_search_results(results):
-    if not results:
-        print("No results found.")
+def load_index():
+    global inverted_index
+    if os.path.exists("inv_idx.json"):
+        with open("inv_idx.json", "r", encoding="utf-8") as f:
+            inverted_index = json.load(f)
+        logging.info("Loaded inverted index from file.")
     else:
-        for term, postings in results.items():
-            print(f"Results for '{term}':")
-            for posting in postings:
-                print(f"Document ID: {posting['id']} (Frequency: {posting['frq']})")
+        logging.info("Inverted index file not found. Running indexing...")
+        index_documents()
 
 
-if __name__ == "__main__":
-    query = input("What would you like to know?\n")
-    # tokenize the query
-    SEARCH_TERMS = tokenize(query)
-
-    print("Starting indexing...")
+def index_documents():
+    logging.info("Starting indexing...")
     index_time = time.time()
     doc_count = inv_index(ROOT_DIR, max_workers=4)
     save_time = time.time()
-    print("Indexing time:", save_time - index_time)
-    print("Indexing complete. Saving index to file...")
+    logging.info(f"Indexing time: {save_time - index_time} seconds")
+    logging.info("Indexing complete. Saving index to file...")
     make_file()
     end_time = time.time()
-    print("Save time:", end_time - save_time)
+    logging.info(f"Save time: {end_time - save_time} seconds")
 
-    # Load the index from file for searching
-    with open("inv_idx.json", "r", encoding="utf-8") as f:
-        inverted_index = json.load(f)
 
-    # Search for the specified terms in the index
-    print("\nStarting search...")
+@app.route('/search', methods=['GET'])
+def search_query():
+    query = request.args.get('query', '')
+    if not query:
+        return jsonify({"error": "No query parameter provided"}), 400
+    SEARCH_TERMS = tokenize(query)
     search_results, query_doc_count = search_terms(SEARCH_TERMS, inverted_index)
-    print_search_results(search_results)
+    top_urls = calculate_frequency_tfidf(SEARCH_TERMS, inverted_index, query_doc_count)
 
-    # Final report
-    print("\nFinal Report:")
-    # Get the top URLs for each search term
-    print("\nTop URLs for each query:")
-    top_urls = calculate_frequency_tfidf(SEARCH_TERMS, inverted_index, doc_count)
-
+    result_data = []
     for term, postings in top_urls.items():
-        print(f"\nTop 5 URLs for '{term}':")
         for posting in postings:
-            print(f"URL: {posting['id']} (Frequency: {posting['frq']})")
+            result_data.append({
+                "term": term,
+                "url": posting['id'],
+                "frequency": posting['frq']
+            })
+
+    return jsonify(result_data)
+
+@app.route('/')
+def home():
+    return render_template('index.html')  # Ensure 'index.html' exists in your templates folder
+
+
+def search_terms(terms, index):
+    results = defaultdict(list)
+    total_docs = len([doc for postings in index.values() for doc in postings])  # Count total docs
+    for term in terms:
+        if term in index:
+            postings = index[term]
+            results[term] = postings
+    return results, total_docs
+
+
+def start_indexing_in_background():
+    indexing_thread = Thread(target=index_documents)
+    indexing_thread.daemon = True  # Ensure the thread exits when the main program exits
+    indexing_thread.start()
+
+
+if __name__ == "__main__":
+    load_index()  # Ensure the index is loaded or generated
+    start_indexing_in_background()  # Start indexing in the background
+    app.run(debug=True, threaded=True)  # Enable threading for Flask
