@@ -1,3 +1,4 @@
+import math
 import os
 import json
 import re
@@ -7,30 +8,31 @@ import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Search terms including multi-word phrases
-SEARCH_TERMS = [
-    "cristina lopes",
-    "machine learning",
-    "ACM",
-    "master of software engineering"
-]
+# implement tf-idf: TF(t,d)×IDF(t)
+
 
 # For default values in dict
-ROOT_DIR = "DEV"
+ROOT_DIR = "ANALYST"
 inverted_index = defaultdict(list)
 
 
-def calculate_frequency(terms, index, top_n=5):
+def calculate_frequency_tfidf(terms, index, doc_count, top_n=5):
     # To store the top results for each search term
     top_urls = defaultdict(list)
     # make sure all terms are lowercase
     terms = [term.lower() for term in terms]
+
+    idf = {term: math.log(doc_count / (len(index.get(term, [])) + 1)) for term in terms}
     # For each search term, get the documents where it appears
     for term in terms:
         if term in index:
             postings = index[term]
+
+            for posting in postings:
+                tf = posting['frq']
+                posting['tf-idf'] = tf * idf[term]
             # Sort by frequency (highest first)
-            sorted_postings = sorted(postings, key=itemgetter('frq'), reverse=True)
+            sorted_postings = sorted(postings, key=itemgetter('tf-idf'), reverse=True)
             # Get the top N URLs
             top_urls[term] = sorted_postings[:top_n]
 
@@ -38,21 +40,8 @@ def calculate_frequency(terms, index, top_n=5):
 
 
 def tokenize(text):
-    # Tokenize both individual words and multi-word phrases
-    phrases = [
-        "cristina lopes",
-        "machine learning",
-        "master of software engineering",
-        "acm"
-    ]
-
-    # First, tokenize based on whitespace and punctuation
-    tokens = re.findall(r'\b\w+\b', text.lower())
-
-    # Check for multi-word phrases in the text
-    for phrase in phrases:
-        if phrase.lower() in text.lower():
-            tokens.append(phrase.lower())  # Add the phrase as a token
+    # Tokenize based on whitespace, punctuation, and mult-word phrases
+    tokens = re.findall(r'\"(.*?)\"|\b\w+\b', text.lower())
 
     return tokens
 
@@ -114,6 +103,7 @@ def make_file(file_name="inv_idx.json"):
 
 def search_terms(terms, index):
     results = defaultdict(list)
+    doc_count = defaultdict(list)
 
     # Convert all search terms to lowercase
     terms = [term.lower() for term in terms]
@@ -121,9 +111,11 @@ def search_terms(terms, index):
     # Search the index for the terms
     for term in terms:
         if term in index:
+            postings = index[term]
             results[term] = index[term]
+            doc_count[term] = len(postings)
 
-    return results
+    return results, doc_count
 
 
 def print_search_results(results):
@@ -137,6 +129,10 @@ def print_search_results(results):
 
 
 if __name__ == "__main__":
+    query = input("What would you like to know?\n")
+    # tokenize the query
+    SEARCH_TERMS = tokenize(query)
+
     print("Starting indexing...")
     index_time = time.time()
     doc_count = inv_index(ROOT_DIR, max_workers=4)
@@ -153,14 +149,14 @@ if __name__ == "__main__":
 
     # Search for the specified terms in the index
     print("\nStarting search...")
-    search_results = search_terms(SEARCH_TERMS, inverted_index)
+    search_results, query_doc_count = search_terms(SEARCH_TERMS, inverted_index)
     print_search_results(search_results)
 
     # Final report
     print("\nFinal Report:")
     # Get the top URLs for each search term
     print("\nTop URLs for each query:")
-    top_urls = calculate_frequency(SEARCH_TERMS, inverted_index)
+    top_urls = calculate_frequency_tfidf(SEARCH_TERMS, inverted_index, doc_count)
 
     for term, postings in top_urls.items():
         print(f"\nTop 5 URLs for '{term}':")
