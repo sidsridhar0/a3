@@ -9,13 +9,13 @@ from flask import Flask, request, jsonify, render_template
 from threading import Thread, Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
-from math import log  # Direct import of log function
+from math import log
 
 app = Flask(__name__)
 
 ROOT_DIR = "DEV"
 inverted_index = defaultdict(list)
-index_lock = Lock()  # Lock for thread-safe access to the inverted index
+index_lock = Lock()  # for thread-safe access to inverted index
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -70,9 +70,11 @@ def process_file(doc_path, root):
 
 
 def merge_indices(global_index, local_index):
-    # Use lock to ensure thread-safe modification of global index
+    # ensure thread-safe modification of global index
     with index_lock:
         for token, postings in local_index.items():
+            if token not in global_index:
+                global_index[token] = []  # Initialize as an empty list if not exists
             global_index[token].extend(postings)
 
 
@@ -165,6 +167,6 @@ def start_indexing_in_background():
 
 
 if __name__ == "__main__":
-    load_index()  # Ensure the index is loaded or generated
-    start_indexing_in_background()  # Start indexing in the background
-    app.run(debug=True, threaded=True)  # Enable threading for Flask
+    load_index()  # index is loaded
+    start_indexing_in_background()  # indexing in the background
+    app.run(debug=True)  # enable threading for Flask

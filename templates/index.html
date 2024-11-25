@@ -3,10 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Rubik:ital,wght@0,300..900;1,300..900&display=swap" rel="stylesheet">
     <title>Search Engine</title>
     <style>
         body {
-            font-family: Arial, sans-serif;
+            font-family: Rubik, sans-serif;
             padding: 20px;
             background-color: #f7f7f7;
         }
@@ -58,6 +61,11 @@
             font-size: 0.9em;
             color: #555;
         }
+        .error-message {
+            color: red;
+            text-align: center;
+            margin-top: 10px;
+        }
     </style>
 </head>
 <body>
@@ -67,23 +75,30 @@
         <button class="search-button" onclick="handleSearch()">Search</button>
     </div>
     <ul id="results" class="results"></ul>
+    <div id="error-message" class="error-message"></div> <!-- Error message container -->
 
     <script>
-        // Function to handle the search when the button is clicked or the Enter key is pressed
+        // when the button is clicked or the "enter" key is pressed, begin search
         async function handleSearch() {
             const query = document.getElementById('search-box').value;
-            if (query.length > 2) {
+            const errorMessage = document.getElementById('error-message');
+
+            // Clear any previous error messages
+            errorMessage.innerHTML = '';
+
+            if (query.length > 1) {
                 try {
-                    // Send the search request to the Python back-end (Flask API)
+                    // send search request to Flask
                     const response = await fetch(`/search?query=${encodeURIComponent(query)}`);
                     const results = await response.json();
                     displayResults(results);
                 } catch (error) {
                     console.error('Error fetching search results:', error);
+                    errorMessage.innerHTML = 'An error occurred while fetching the search results. Please try again.';
                 }
             } else {
-                // Clear results if the query is too short
-                document.getElementById('results').innerHTML = '';
+                // Show error if query is too short
+                errorMessage.innerHTML = 'Please enter a query with more than 1 character.';
             }
         }
 
