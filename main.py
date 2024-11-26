@@ -1,7 +1,6 @@
 import os
 import json
 import time
-import re
 import logging
 from collections import defaultdict
 from operator import itemgetter
@@ -10,12 +9,20 @@ from threading import Thread, Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
 from math import log
+from transformers import DistilBertTokenizer
+import torch
+from dotenv import load_dotenv
+import numpy as np
 
 app = Flask(__name__)
 
+
+HF_TOKEN = os.getenv("HF_TOKEN")
 ROOT_DIR = "DEV"
 inverted_index = defaultdict(list)
 index_lock = Lock()  # for thread-safe access to inverted index
+token = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
+term_cache = {}
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -40,14 +47,16 @@ def calculate_frequency_tfidf(terms, index, doc_count, top_n=5):
 
 
 def tokenize(text):
-    tokens = re.findall(r'\"(.*?)\"|\b\w+\b', text.lower())
+    tokens = token.tokenize(text.lower())
     return tokens
 
 
 def get_html(path):
-    with open(path, "r", encoding="utf-8") as file:
-        soup = BeautifulSoup(file, "html.parser")
-        return soup.get_text()
+    if path not in term_cache:
+        with open(path, "r", encoding="utf-8") as file:
+            soup = BeautifulSoup(file, "html.parser")
+            term_cache[path] = soup.get_text()
+    return term_cache[path]
 
 
 def get_token_freq(tokens):
@@ -81,6 +90,7 @@ def merge_indices(global_index, local_index):
 def inv_index(root, max_workers=4):
     doc_count = 0
     all_files = []
+    local_index = defaultdict(list)
     for s, _, fs in os.walk(root):
         for file in fs:
             all_files.append(os.path.join(s, file))
@@ -169,4 +179,4 @@ def start_indexing_in_background():
 if __name__ == "__main__":
     load_index()  # index is loaded
     start_indexing_in_background()  # indexing in the background
-    app.run(debug=True)  # enable threading for Flask
+    app.run(debug=False)  # enable threading for Flask
