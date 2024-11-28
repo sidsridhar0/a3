@@ -17,7 +17,7 @@ ROOT_DIR = "DEV"
 index_lock = Lock()  # for thread-safe access to inverted index
 inverted_index = defaultdict(list)
 term_cache = {}
-generate_tokens = spacy.load("en_core_web_sm")
+create_tokens = spacy.load("en_core_web_sm")
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 
@@ -50,7 +50,7 @@ def merge_indices(global_index, local_index):
 
 # tokenizing using spacy (with permission from professor)
 def tokenize(text):
-    doc = generate_tokens(text.lower())
+    doc = create_tokens(text.lower())
     ngrams = []
 
     # Generate 2-grams and 4-grams
@@ -104,7 +104,7 @@ def process_file(doc_path, root):
 
     local_index = defaultdict(list)
     for position, token in enumerate(tokens):
-        local_index[token].append({"id": doc_id, "frq": tf[token], "positions":[position]})
+        local_index[token].append({"id": doc_id, "frq": tf[token], "positions": [position]})
     return local_index
 
 
