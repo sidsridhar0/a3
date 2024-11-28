@@ -9,23 +9,20 @@ from threading import Thread, Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
 from math import log
-from transformers import DistilBertTokenizer
 import spacy
 
 app = Flask(__name__)
 
-HF_TOKEN = os.getenv("HF_TOKEN")
 ROOT_DIR = "DEV"
 index_lock = Lock()  # for thread-safe access to inverted index
 inverted_index = defaultdict(list)
-token = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
 term_cache = {}
-
+generate_tokens = spacy.load("en_core_web_sm")
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 
 
-# Function to save partial inverted index
+# save partial inverted index
 def save_partial_index(partial_index, part_num):
     partial_index_file = f"partial_inv_idx_{part_num}.json"
     with open(partial_index_file, "w", encoding="utf-8") as f:
@@ -53,10 +50,16 @@ def merge_indices(global_index, local_index):
 
 # tokenizing using spacy (with permission from professor)
 def tokenize(text):
-    tokens = spacy.load("en_core_web_sm")
-    #tokens = token.tokenize(text.lower())
-    doc = tokens(text.lower())
-    return [token.text for token in doc if not token.is_punct]
+    doc = generate_tokens(text.lower())
+    ngrams = []
+
+    # Generate 2-grams and 4-grams
+    for n in range(2, 5):
+        ngrams.extend([" ".join(token.text for token in doc[i: i + n]) for i in range(len(doc) - n + 1)])
+
+    # Combine individual words with n-grams
+    tokens = [token.text for token in doc] + ngrams
+    return tokens
 
 
 def calculate_frequency_tfidf(terms, index, doc_count, top_n=5):
@@ -100,8 +103,8 @@ def process_file(doc_path, root):
     tf = get_token_freq(tokens)
 
     local_index = defaultdict(list)
-    for t, f in tf.items():
-        local_index[t].append({"id": doc_id, "frq": f})
+    for position, token in enumerate(tokens):
+        local_index[token].append({"id": doc_id, "frq": tf[token], "positions":[position]})
     return local_index
 
 
@@ -213,10 +216,28 @@ def search_query():
 def search_terms(terms, index):
     results = defaultdict(list)
     total_docs = len([doc for postings in index.values() for doc in postings])  # Count total docs
+
+    # This dictionary will keep track of how many query terms match each document
+    doc_matches = defaultdict(int)
+
+    # Iterate through each term in the query
     for term in terms:
         if term in index:
             postings = index[term]
-            results[term] = postings
+            for posting in postings:
+                doc_matches[posting['id']] += 1  # increment match count for each doc
+
+    # filter out the docs that matched all terms in the query want documents that match both terms
+    result_docs = {doc_id: count for doc_id, count in doc_matches.items() if count == len(terms)}
+
+    # Retrieve the postings for those documents that matched all terms
+    for term in terms:
+        if term in index:
+            postings = index[term]
+            for posting in postings:
+                if posting['id'] in result_docs:
+                    results[term].append(posting)
+
     return results, total_docs
 
 
@@ -229,6 +250,6 @@ def start_indexing_in_background():
 
 # Run the Flask app
 if __name__ == "__main__":
-    load_index()  # Load the index if it exists
-    start_indexing_in_background()  # Start indexing in the background
+    load_index()  # index is loaded
+    start_indexing_in_background()  # start indexing in the background
     app.run(debug=False)
