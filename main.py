@@ -199,6 +199,7 @@ def home():
 # Searching through the index
 @app.route('/search', methods=['GET'])
 def search_query():
+    search_time = time.time()
     query = request.args.get('query', '')
     if not query:
         return jsonify({"error": "No query parameter provided"}), 400
@@ -214,7 +215,8 @@ def search_query():
                 "url": posting['id'],
                 "frequency": posting['frq']
             })
-
+    finish_search = time.time()
+    logging.info(f"Search time {finish_search - search_time} seconds")
     return jsonify(result_data)
 
 
