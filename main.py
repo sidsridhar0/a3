@@ -10,6 +10,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
 from math import log
 import spacy
+import nltk
+from nltk.stem import PorterStemmer
 
 app = Flask(__name__)
 
@@ -18,6 +20,8 @@ index_lock = Lock()  # for thread-safe access to inverted index
 inverted_index = defaultdict(list)
 term_cache = {}
 create_tokens = spacy.load("en_core_web_sm")
+nltk.download('punkt') # punkt = stemmer data
+stemmer = PorterStemmer()
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 
@@ -53,12 +57,14 @@ def tokenize(text):
     doc = create_tokens(text.lower())
     ngrams = []
 
+    # porter stemming process for each token in the doc
+    token_stemming = [stemmer.stem(token.text) for token in doc]
     # Generate 2-grams and 4-grams
     for n in range(2, 5):
-        ngrams.extend([" ".join(token.text for token in doc[i: i + n]) for i in range(len(doc) - n + 1)])
+        ngrams.extend([" ".join(token_stemming[i: i + n]) for i in range(len(token_stemming) - n + 1)])
 
     # Combine individual words with n-grams
-    tokens = [token.text for token in doc] + ngrams
+    tokens = token_stemming + ngrams
     return tokens
 
 
