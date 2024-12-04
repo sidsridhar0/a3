@@ -1,3 +1,4 @@
+import heapq
 import os
 import json
 import time
@@ -11,16 +12,17 @@ from bs4 import BeautifulSoup
 from math import log
 import spacy
 import nltk
+import re
 from nltk.stem import PorterStemmer
 
 app = Flask(__name__)
 
-ROOT_DIR = "DEV"
+ROOT_DIR = "ANALYST"
 index_lock = Lock()  # for thread-safe access to inverted index
 inverted_index = defaultdict(list)
 term_cache = {}
 create_tokens = spacy.load("en_core_web_sm")
-nltk.download('punkt') # punkt = stemmer data
+nltk.download('punkt')  # punkt = stemmer data
 stemmer = PorterStemmer()
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -192,9 +194,11 @@ def index_documents():
     end_time = time.time()
     logging.info(f"Save time: {end_time - save_time} seconds")
 
+
 @app.route('/')
 def home():
     return render_template('index.html')
+
 
 # Searching through the index
 @app.route('/search', methods=['GET'])
@@ -207,14 +211,15 @@ def search_query():
     search_results, query_doc_count = search_terms(SEARCH_TERMS, inverted_index)
     top_urls = calculate_frequency_tfidf(SEARCH_TERMS, inverted_index, query_doc_count)
 
-    result_data = []
+    result_data = set()
     for term, postings in top_urls.items():
         for posting in postings:
-            result_data.append({
-                "term": term,
-                "url": posting['id'],
-                "frequency": posting['frq']
-            })
+            result_data.add((
+                term,
+                posting['id'],
+                # posting['frq']
+            ))
+    result_data = [{"term": posting_id} for posting_id in result_data]
     finish_search = time.time()
     logging.info(f"Search time {finish_search - search_time} seconds")
     return jsonify(result_data)
@@ -223,10 +228,10 @@ def search_query():
 # Searching terms in the index
 def search_terms(terms, index):
     results = defaultdict(list)
-    total_docs = len([doc for postings in index.values() for doc in postings])  # Count total docs
-
-    # This dictionary will keep track of how many query terms match each document
+    # keep track of how many query terms match each document
     doc_matches = defaultdict(int)
+    #doc_coverages = defaultdict(int)
+    total_docs = len([doc for postings in index.values() for doc in postings])  # Count total docs
 
     # Iterate through each term in the query
     for term in terms:
@@ -249,15 +254,26 @@ def search_terms(terms, index):
     return results, total_docs
 
 
-# Start the indexing process in the background
-def start_indexing_in_background():
-    indexing_thread = Thread(target=index_documents)
-    indexing_thread.daemon = True  # Ensure the thread exits when the main program exits
-    indexing_thread.start()
+def new_search_terms(terms, index):
+    res = defaultdict(list)
+    for t in terms:
+        if t in index:
+            res[t] = heapq.nlargest(5, index[t], key=lambda x: x['tf-idf'])
+    return res
 
 
-# Run the Flask app
+# Start the indexing process in the background only if the index doesn't exist
+def load_or_index_documents():
+    if not os.path.exists("inv_idx.json"):
+        logging.info("Inverted index not found. Starting indexing in the background.")
+        indexing_thread = Thread(target=index_documents)
+        indexing_thread.daemon = True  # Ensure it exits when the main program exits
+        indexing_thread.start()
+    else:
+        logging.info("Inverted index found. Loading from file.")
+        load_index()  # Load the index if it already exists
+
+
 if __name__ == "__main__":
-    load_index()  # index is loaded
-    start_indexing_in_background()  # start indexing in the background
+    load_or_index_documents()  # Start indexing if needed, or load the index
     app.run(debug=False)
