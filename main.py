@@ -54,23 +54,61 @@ def merge_indices(global_index, local_index):
             global_index[token].extend(postings)
 
 
+def term_doc_matrix(search_query):
+    # IGNORE FOR NOW
+    # iterate through each word in the query
+    # dict[url] = number of appearances, start at 0
+    # for each word
+    #   get inv idx
+    #       add all urls or ++ to urls that exist
+    # now we have dict of unique urls that exist
+    # check frequency of urls with number == to number of terms
+
+    # OR
+
+    # iterate through search terms, look for ngrams of 3
+    # do same as before except iterate through each 3-gram instead of word
+
+    # returns dict with list of urls and frequency of full query
+    pass
+
+
 # tokenizing using spacy (with permission from professor)
 def tokenize(text):
     doc = create_tokens(text.lower())
+    words = re.findall(r'\b\w+\b', text.lower())
     ngrams = []
 
     # porter stemming process for each token in the doc
     token_stemming = [stemmer.stem(token.text) for token in doc]
     # Generate 2-grams and 4-grams
+    # eventually change to 2 and 3-grams
     for n in range(2, 5):
         ngrams.extend([" ".join(token_stemming[i: i + n]) for i in range(len(token_stemming) - n + 1)])
-
+        ngrams.extend([" ".join(words[i: i + n]) for i in range(len(words) - n + 1)])
     # Combine individual words with n-grams
     tokens = token_stemming + ngrams
     return tokens
 
 
+# def tokenize_without_stemming(text):
+#
+#     # Generate 2-grams and 4-grams
+#     for n in range(2, 5):
+#         ngrams.extend([" ".join(words[i: i + n]) for i in range(len(words) - n + 1)])
+#
+#     # Combine individual words with n-grams
+#     tokens = words + ngrams
+#     return tokens
+
+def ranking(terms, index, top_n):
+    #calcfreq
+    #calcjaccard
+    #sort
+    pass
+
 def calculate_frequency_tfidf(terms, index, doc_count, top_n=5):
+    postings = defaultdict(list)
     top_urls = defaultdict(list)
     terms = [term.lower() for term in terms]
 
@@ -86,6 +124,7 @@ def calculate_frequency_tfidf(terms, index, doc_count, top_n=5):
             top_urls[term] = sorted_postings[:top_n]  # Get the top_n postings
 
     return top_urls
+
 
 
 def get_html(path):
@@ -104,7 +143,7 @@ def get_token_freq(tokens):
 
 
 # Processing a file and constructing its local index
-def process_file(doc_path, root):
+def process_file(doc_path, root, doc_count):
     doc_id = os.path.relpath(doc_path, root)
     doc_text = get_html(doc_path)
     tokens = tokenize(doc_text)
@@ -112,7 +151,12 @@ def process_file(doc_path, root):
 
     local_index = defaultdict(list)
     for position, token in enumerate(tokens):
-        local_index[token].append({"id": doc_id, "frq": tf[token], "positions": [position]})
+        local_index[token].append({
+            "id": doc_id,
+            "frq": tf[token],
+            "positions": [position],
+            "tfidf": tf[token] * log(doc_count / (len(local_index.get(token, [])) + 1))
+        })
     return local_index
 
 
@@ -126,7 +170,7 @@ def inv_index(root, max_workers=4, split_count=3):
 
     partial_index = defaultdict(list)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(process_file, file_path, root): file_path for file_path in all_files}
+        futures = {executor.submit(process_file, file_path, root, doc_count): file_path for file_path in all_files}
         for future in as_completed(futures):
             local_index = future.result()
             merge_indices(partial_index, local_index)
@@ -209,6 +253,8 @@ def search_query():
         return jsonify({"error": "No query parameter provided"}), 400
     SEARCH_TERMS = tokenize(query)
     search_results, query_doc_count = search_terms(SEARCH_TERMS, inverted_index)
+
+    # dont need?
     top_urls = calculate_frequency_tfidf(SEARCH_TERMS, inverted_index, query_doc_count)
 
     result_data = set()
@@ -230,7 +276,7 @@ def search_terms(terms, index):
     results = defaultdict(list)
     # keep track of how many query terms match each document
     doc_matches = defaultdict(int)
-    #doc_coverages = defaultdict(int)
+    # doc_coverages = defaultdict(int)
     total_docs = len([doc for postings in index.values() for doc in postings])  # Count total docs
 
     # Iterate through each term in the query
