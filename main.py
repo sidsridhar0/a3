@@ -54,77 +54,143 @@ def merge_indices(global_index, local_index):
             global_index[token].extend(postings)
 
 
-def term_doc_matrix(search_query):
-    # IGNORE FOR NOW
-    # iterate through each word in the query
-    # dict[url] = number of appearances, start at 0
-    # for each word
-    #   get inv idx
-    #       add all urls or ++ to urls that exist
-    # now we have dict of unique urls that exist
-    # check frequency of urls with number == to number of terms
-
-    # OR
-
-    # iterate through search terms, look for ngrams of 3
-    # do same as before except iterate through each 3-gram instead of word
-
-    # returns dict with list of urls and frequency of full query
-    pass
-
-
-# tokenizing using spacy (with permission from professor)
-def tokenize(text):
+# Function to tokenize document text
+def tokenize_document(text, ngram=0):
+    # Tokenize the text into words using spacy
     doc = create_tokens(text.lower())
-    words = re.findall(r'\b\w+\b', text.lower())
+    words = re.findall(r'\b\w+\b', text.lower())  # Extract words without punctuation
     ngrams = []
 
-    # porter stemming process for each token in the doc
+    # If ngram is 0, set it to the length of words + 1 to generate all possible ngrams
+    if ngram == 0:
+        ngram = len(words) + 1
+
+    # Generate non-stemmed n-grams (preserve multi-word phrases)
+    for n in range(2, 5):  # 2-grams and 4-grams
+        ngrams.extend([" ".join(words[i:i + n]) for i in range(len(words) - n + 1)])
+
+    # Porter stemming process for individual tokens (don't stem n-grams)
     token_stemming = [stemmer.stem(token.text) for token in doc]
-    # Generate 2-grams and 4-grams
-    # eventually change to 2 and 3-grams
-    for n in range(2, 5):
-        ngrams.extend([" ".join(token_stemming[i: i + n]) for i in range(len(token_stemming) - n + 1)])
-        ngrams.extend([" ".join(words[i: i + n]) for i in range(len(words) - n + 1)])
-    # Combine individual words with n-grams
-    tokens = token_stemming + ngrams
+
+    # Generate stemmed n-grams
+    for n in range(2, 5):  # 2-grams and 4-grams for stemmed words
+        ngrams.extend([" ".join(token_stemming[i:i + n]) for i in range(len(token_stemming) - n + 1)])
+
+    # Combine individual words (non-stemmed) with n-grams (both stemmed and non-stemmed)
+    tokens = words + ngrams
     return tokens
 
 
-# def tokenize_without_stemming(text):
-#
-#     # Generate 2-grams and 4-grams
-#     for n in range(2, 5):
-#         ngrams.extend([" ".join(words[i: i + n]) for i in range(len(words) - n + 1)])
-#
-#     # Combine individual words with n-grams
-#     tokens = words + ngrams
-#     return tokens
+def tokenize_query(query, ngram=0):
+    # Tokenize the query into words using spacy and basic preprocessing
+    doc = create_tokens(query.lower())
+    words = re.findall(r'\b\w+\b', query.lower())  # Extract words without punctuation
+    ngrams = []
 
-def ranking(terms, index, top_n):
-    #calcfreq
-    #calcjaccard
-    #sort
-    pass
+    # If ngram is 0, set it to the length of words + 1 to generate all possible ngrams
+    if ngram == 0:
+        ngram = len(words) + 1
+
+    # Generate non-stemmed n-grams (preserve multi-word phrases) for the query
+    for n in range(2, 5):
+        ngrams.extend([" ".join(words[i:i + n]) for i in range(len(words) - n + 1)])
+
+    # Combine individual words (non-stemmed) with n-grams (both stemmed and non-stemmed)
+    tokens = words + ngrams
+    return tokens
+
+
+# Update the search query handling route to use the new `tokenize_query` function
+@app.route('/search', methods=['GET'])
+def search_query():
+    search_time = time.time()
+    query = request.args.get('query', '')
+    if not query:
+        return jsonify({"error": "No query parameter provided"}), 400
+
+    # Use tokenize_query for search query
+    SEARCH_TERMS = tokenize_query(query)  # Tokenize the query differently
+    search_results, query_doc_count = search_terms(SEARCH_TERMS, inverted_index)
+
+    # Calculate the frequency and tf-idf for the search results
+    top_urls = calculate_frequency_tfidf(SEARCH_TERMS, inverted_index, query_doc_count)
+
+    # Apply Jaccard ranking on top URLs based on query terms
+    ranked_docs, doc_scores = ranking(SEARCH_TERMS, inverted_index)
+    print(f"Ranked docs: {ranked_docs} \n Docked scores: {doc_scores}")
+    # Create a result set with the documents ranked by Jaccard similarity
+    result_data = set()
+    for doc_id, _ in ranked_docs:
+        for term, postings in top_urls.items():
+            for posting in postings:
+                if posting['id'] == doc_id:
+                    result_data.add({
+                        'term': term,
+                        'doc_id': doc_id,
+                        'jaccard_score': doc_scores[doc_id]
+                    })
+
+    finish_search = time.time()
+    logging.info(f"Search time {finish_search - search_time} seconds")
+    return jsonify(list(result_data))
+
+
+def ranking(terms, index, top_n=5, alpha=0.7):
+    doc_scores = defaultdict(float)
+
+    # Loop through the terms and compute Jaccard similarity for each posting
+    for term in terms:
+        if term in index:
+            postings = index[term]
+            for posting in postings:
+                # Calculate Jaccard similarity between the query and the document
+                jaccard_score = calculate_jaccard(posting, terms)
+
+                # Combine Jaccard score with the document's TF-IDF score
+                tfidf_score = posting.get('tf-idf', 0)
+                final_score = alpha * tfidf_score + (1 - alpha) * jaccard_score
+
+                # Sum the final scores to rank the document based on total similarity
+                doc_scores[posting['id']] += final_score
+
+    # Sort the documents by their total score and get the top_n
+    ranked_docs = heapq.nlargest(top_n, doc_scores.items(), key=itemgetter(1))
+
+    return ranked_docs, doc_scores
+
 
 def calculate_frequency_tfidf(terms, index, doc_count, top_n=5):
-    postings = defaultdict(list)
     top_urls = defaultdict(list)
     terms = [term.lower() for term in terms]
 
     # Calculate IDF for each term
-    idf = {term: log(doc_count / (len(index.get(term, [])) + 1)) for term in terms}
+    idf = {term: log(doc_count / (len(index.get(term, [])) or 1)) for term in terms}
     for term in terms:
         if term in index:
             postings = index[term]
             for posting in postings:
                 tf = posting['frq']
                 posting['tf-idf'] = tf * idf[term]  # Compute TF-IDF
+
             sorted_postings = sorted(postings, key=itemgetter('tf-idf'), reverse=True)
             top_urls[term] = sorted_postings[:top_n]  # Get the top_n postings
-
+    # print(calculate_jaccard(posting, terms))
     return top_urls
 
+
+# A ^ B / A U B
+def calculate_jaccard(posting, terms):
+    # Convert both posting terms and query terms to sets
+    document_terms = set(posting['id'].split())
+    query_terms = set(terms)
+
+    # Calculate intersection and union
+    intersection = len(document_terms & query_terms)
+    union = len(document_terms | query_terms)
+
+    if union == 0:
+        return 0  # Avoid division by zero if both sets are empty
+    return intersection / union
 
 
 def get_html(path):
@@ -143,20 +209,30 @@ def get_token_freq(tokens):
 
 
 # Processing a file and constructing its local index
+# Process each document and calculate TF-IDF
 def process_file(doc_path, root, doc_count):
     doc_id = os.path.relpath(doc_path, root)
     doc_text = get_html(doc_path)
-    tokens = tokenize(doc_text)
+    tokens = tokenize_document(doc_text, 4)
     tf = get_token_freq(tokens)
 
     local_index = defaultdict(list)
+
+    # First pass: accumulate term frequencies
     for position, token in enumerate(tokens):
         local_index[token].append({
             "id": doc_id,
             "frq": tf[token],
-            "positions": [position],
-            "tfidf": tf[token] * log(doc_count / (len(local_index.get(token, [])) + 1))
+            "positions": [position]
         })
+
+    # Second pass: calculate tf-idf for each token
+    for token, postings in local_index.items():
+        term_freq = len(postings)  # Number of documents containing this token
+        idf = log(doc_count / (term_freq or 1))  # Avoid division by zero
+        for posting in postings:
+            posting["tfidf"] = posting["frq"] * idf
+
     return local_index
 
 
@@ -212,7 +288,7 @@ def make_file(file_name="inv_idx.json"):
     logging.info(f"Final index saved to {file_name}.")
 
 
-# Function to load the final index
+# load the final index
 def load_index():
     global inverted_index
     if os.path.exists("inv_idx.json"):
@@ -244,52 +320,39 @@ def home():
     return render_template('index.html')
 
 
-# Searching through the index
-@app.route('/search', methods=['GET'])
-def search_query():
-    search_time = time.time()
-    query = request.args.get('query', '')
-    if not query:
-        return jsonify({"error": "No query parameter provided"}), 400
-    SEARCH_TERMS = tokenize(query)
-    search_results, query_doc_count = search_terms(SEARCH_TERMS, inverted_index)
-
-    # dont need?
-    top_urls = calculate_frequency_tfidf(SEARCH_TERMS, inverted_index, query_doc_count)
-
-    result_data = set()
-    for term, postings in top_urls.items():
-        for posting in postings:
-            result_data.add((
-                term,
-                posting['id'],
-                # posting['frq']
-            ))
-    result_data = [{"term": posting_id} for posting_id in result_data]
-    finish_search = time.time()
-    logging.info(f"Search time {finish_search - search_time} seconds")
-    return jsonify(result_data)
-
-
 # Searching terms in the index
 def search_terms(terms, index):
     results = defaultdict(list)
-    # keep track of how many query terms match each document
     doc_matches = defaultdict(int)
-    # doc_coverages = defaultdict(int)
-    total_docs = len([doc for postings in index.values() for doc in postings])  # Count total docs
+    exact_phrases = []  # To store exact phrases found in the query
+    total_docs = len([doc for postings in index.values() for doc in postings])
 
-    # Iterate through each term in the query
+    # Create n-grams from the query terms
+    ngrams = [" ".join(terms[i:i + 2]) for i in range(len(terms) - 1)]  # 2-grams
+    ngrams += [" ".join(terms[i:i + 3]) for i in range(len(terms) - 2)]  # 3-grams
+
+    # Check for exact phrase matches in the index
+    for ngram in ngrams:
+        if ngram in index:
+            exact_phrases.append(ngram)
+
+    # Search for exact matches first
+    for phrase in exact_phrases:
+        postings = index[phrase]
+        for posting in postings:
+            doc_matches[posting['id']] += 1  # Match with exact phrase
+
+    # Search for individual terms if necessary
     for term in terms:
         if term in index:
             postings = index[term]
             for posting in postings:
-                doc_matches[posting['id']] += 1  # increment match count for each doc
+                doc_matches[posting['id']] += 1  # Match with individual term
 
-    # filter out the docs that matched all terms in the query want documents that match both terms
-    result_docs = {doc_id: count for doc_id, count in doc_matches.items() if count == len(terms)}
+    # Filter docs that match all query terms (exact phrase or individual terms)
+    result_docs = {doc_id: count for doc_id, count in doc_matches.items() if count >= len(terms)}
 
-    # Retrieve the postings for those documents that matched all terms
+    # Retrieve the postings for documents that matched
     for term in terms:
         if term in index:
             postings = index[term]
