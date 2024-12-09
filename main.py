@@ -10,7 +10,6 @@ from threading import Thread, Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
 from math import log
-import spacy
 import nltk
 import re
 from nltk.stem import PorterStemmer
@@ -21,7 +20,6 @@ ROOT_DIR = "ANALYST"
 index_lock = Lock()  # for thread-safe access to inverted index
 inverted_index = defaultdict(list)
 term_cache = {}
-create_tokens = spacy.load("en_core_web_sm")
 nltk.download('punkt')  # punkt = stemmer data
 stemmer = PorterStemmer()
 # Set up logging
@@ -92,7 +90,7 @@ def tokenize_query(query, ngram=0):
         ngram = len(words) + 1
 
     # Generate non-stemmed n-grams (preserve multi-word phrases) for the query
-    for n in range(2, 5):
+    for n in range(2, 5):  # Ensure we're capturing 2-grams (like "data science")
         ngrams.extend([" ".join(words[i:i + n]) for i in range(len(words) - n + 1)])
 
     # Combine individual words (non-stemmed) with n-grams (both stemmed and non-stemmed)
@@ -113,50 +111,57 @@ def search_query():
     search_results, query_doc_count = search_terms(SEARCH_TERMS, inverted_index)
 
     # Calculate the frequency and tf-idf for the search results
-    top_urls = calculate_frequency_tfidf(SEARCH_TERMS, inverted_index, query_doc_count)
-
-    # Apply Jaccard ranking on top URLs based on query terms
-    ranked_docs, doc_scores = ranking(SEARCH_TERMS, inverted_index)
-    print(f"Ranked docs: {ranked_docs} \n Docked scores: {doc_scores}")
-    # Create a result set with the documents ranked by Jaccard similarity
-    result_data = set()
-    for doc_id, _ in ranked_docs:
-        for term, postings in top_urls.items():
-            for posting in postings:
-                if posting['id'] == doc_id:
-                    result_data.add({
-                        'term': term,
-                        'doc_id': doc_id,
-                        'jaccard_score': doc_scores[doc_id]
-                    })
-
+    top_urls = ranking(SEARCH_TERMS, inverted_index, query_doc_count, top_n=5)
+    # top_urls = calculate_frequency_idf(SEARCH_TERMS, inverted_index, query_doc_count)
     finish_search = time.time()
+
+    result_data = set()
+    for term, postings in top_urls.items():
+        for posting in postings:
+            result_data.add((
+                term,
+                posting['id'],
+            ))
+    result_data = [{"term": posting_id} for posting_id in result_data]
     logging.info(f"Search time {finish_search - search_time} seconds")
-    return jsonify(list(result_data))
+    return jsonify(result_data)
 
 
-def ranking(terms, index, top_n=5, alpha=0.7):
-    doc_scores = defaultdict(float)
+def embedded_sort(top_urls):
+    return top_urls
 
-    # Loop through the terms and compute Jaccard similarity for each posting
-    for term in terms:
-        if term in index:
-            postings = index[term]
-            for posting in postings:
-                # Calculate Jaccard similarity between the query and the document
-                jaccard_score = calculate_jaccard(posting, terms)
 
-                # Combine Jaccard score with the document's TF-IDF score
-                tfidf_score = posting.get('tf-idf', 0)
-                final_score = alpha * tfidf_score + (1 - alpha) * jaccard_score
+def ranking(terms, index, doc_count, top_n):
+    # get top n tfidf, already sorted
+    top_urls = calculate_frequency_tfidf(terms, index, doc_count, top_n)
+    lock = Lock()
 
-                # Sum the final scores to rank the document based on total similarity
-                doc_scores[posting['id']] += final_score
+    # calcjaccard
+    def compute_jaccard(term, posting):
+        jaccard_score = calculate_jaccard(posting['positions'], terms)  # Replace with your actual field
+        posting['jaccard'] = jaccard_score
+        with lock:  # Ensure thread-safe update
+            for idx, existing_posting in enumerate(top_urls[term]):
+                if existing_posting['id'] == posting['id']:
+                    top_urls[term][idx] = posting
+                    break
 
-    # Sort the documents by their total score and get the top_n
-    ranked_docs = heapq.nlargest(top_n, doc_scores.items(), key=itemgetter(1))
+    # calcjaccard parallel
+    with ThreadPoolExecutor() as executor:
+        jaccard_futures = {
+            executor.submit(compute_jaccard, term, posting): (term, posting)
+            for term, postings in top_urls.items()
+            for posting in postings
+        }
+        for future in as_completed(jaccard_futures):
+            future.result()  # Wait for all futures to complete
 
-    return ranked_docs, doc_scores
+    # Sort by Jaccard within each term's postings
+    for term in top_urls:
+        with lock:  # Ensure thread-safe access
+            top_urls[term].sort(key=lambda x: x.get('jaccard', 0), reverse=True)
+
+    return top_urls
 
 
 def calculate_frequency_tfidf(terms, index, doc_count, top_n=5):
@@ -180,16 +185,10 @@ def calculate_frequency_tfidf(terms, index, doc_count, top_n=5):
 
 # A ^ B / A U B
 def calculate_jaccard(posting, terms):
-    # Convert both posting terms and query terms to sets
-    document_terms = set(posting['id'].split())
-    query_terms = set(terms)
-
-    # Calculate intersection and union
-    intersection = len(document_terms & query_terms)
-    union = len(document_terms | query_terms)
-
-    if union == 0:
-        return 0  # Avoid division by zero if both sets are empty
+    intersection = 0
+    for term in terms:
+        intersection = len(set(term) & set(posting))
+    union = len(posting) + len(terms)
     return intersection / union
 
 
@@ -201,6 +200,27 @@ def get_html(path):
     return term_cache[path]
 
 
+def get_html_tags(path):
+    # this function returns a list of HTML tags corresponding to each token in the document.
+    # The tags are aligned with the tokens (words) in the document text.
+    with open(path, "r", encoding="utf-8") as file:
+        soup = BeautifulSoup(file, "html.parser")
+
+    tags = []
+
+    # Traverse all text elements and associate each token with its parent tag
+    for element in soup.descendants:
+        if isinstance(element, str):  # Only process text nodes
+            text = element.strip()
+            if text:
+                # Tokenize the text into words, split by whitespace
+                tokens = text.split()
+                parent_tag = element.parent.name if element.parent else None
+                # Append the tag to match the number of tokens
+                tags.extend([parent_tag] * len(tokens))
+
+    return tags
+
 def get_token_freq(tokens):
     freq = defaultdict(int)
     for t in tokens:
@@ -209,17 +229,28 @@ def get_token_freq(tokens):
 
 
 # Processing a file and constructing its local index
-# Process each document and calculate TF-IDF
 def process_file(doc_path, root, doc_count):
     doc_id = os.path.relpath(doc_path, root)
     doc_text = get_html(doc_path)
     tokens = tokenize_document(doc_text, 4)
     tf = get_token_freq(tokens)
 
+    term_weightage = defaultdict(int)
+    tag_weightage = {
+        "h1": 2,
+        "h2": 2,
+        "h3": 2,
+        "strong": 2,
+        "b": 2,
+        "p": 1,
+    }
+
+    # accumulate term frequencies
     local_index = defaultdict(list)
 
-    # First pass: accumulate term frequencies
     for position, token in enumerate(tokens):
+        #token_tag = get_html_tags()
+        #weight = tag_weightage.get(token_tag, 1)
         local_index[token].append({
             "id": doc_id,
             "frq": tf[token],
@@ -229,7 +260,12 @@ def process_file(doc_path, root, doc_count):
     # Second pass: calculate tf-idf for each token
     for token, postings in local_index.items():
         term_freq = len(postings)  # Number of documents containing this token
-        idf = log(doc_count / (term_freq or 1))  # Avoid division by zero
+        if 0 < term_freq <= doc_count:
+            idf = log(doc_count / term_freq)
+        else:
+            idf = 0  # If the term doesn't appear in any document, set IDF to 0
+
+        # Update the tf-idf value for each posting
         for posting in postings:
             posting["tfidf"] = posting["frq"] * idf
 
