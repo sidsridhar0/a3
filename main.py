@@ -119,7 +119,6 @@ def search_query():
     for term, postings in top_urls.items():
         for posting in postings:
             result_data.add((
-                term,
                 posting['id'],
             ))
     result_data = [{"term": posting_id} for posting_id in result_data]
@@ -152,7 +151,7 @@ def calculate_jaccard(posting, terms):
     intersection = 0
     for term in terms:
         intersection = len(set(term) & set(posting))
-    union = len(terms.Union(posting))
+    union = len(set(terms) | set(posting))
     return intersection / union
 
 
