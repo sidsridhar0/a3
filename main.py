@@ -1,4 +1,3 @@
-import heapq
 import os
 import json
 import time
@@ -16,7 +15,7 @@ from nltk.stem import PorterStemmer
 
 app = Flask(__name__)
 
-ROOT_DIR = "ANALYST"
+ROOT_DIR = "DEV"
 index_lock = Lock()  # for thread-safe access to inverted index
 inverted_index = defaultdict(list)
 term_cache = {}
@@ -54,8 +53,6 @@ def merge_indices(global_index, local_index):
 
 # Function to tokenize document text
 def tokenize_document(text, ngram=0):
-    # Tokenize the text into words using spacy
-    doc = create_tokens(text.lower())
     words = re.findall(r'\b\w+\b', text.lower())  # Extract words without punctuation
     ngrams = []
 
@@ -68,7 +65,11 @@ def tokenize_document(text, ngram=0):
         ngrams.extend([" ".join(words[i:i + n]) for i in range(len(words) - n + 1)])
 
     # Porter stemming process for individual tokens (don't stem n-grams)
-    token_stemming = [stemmer.stem(token.text) for token in doc]
+    token_stemming = []
+    try:
+        token_stemming = [stemmer.stem(token.text) for token in words]
+    except AttributeError as e:
+        token_stemming = [stemmer.stem(token) for token in words]
 
     # Generate stemmed n-grams
     for n in range(2, 5):  # 2-grams and 4-grams for stemmed words
@@ -81,7 +82,6 @@ def tokenize_document(text, ngram=0):
 
 def tokenize_query(query, ngram=0):
     # Tokenize the query into words using spacy and basic preprocessing
-    doc = create_tokens(query.lower())
     words = re.findall(r'\b\w+\b', query.lower())  # Extract words without punctuation
     ngrams = []
 
@@ -98,15 +98,15 @@ def tokenize_query(query, ngram=0):
     return tokens
 
 
-# Update the search query handling route to use the new `tokenize_query` function
+# Update the search query handling route to use the new tokenize_query function
 @app.route('/search', methods=['GET'])
 def search_query():
-    search_time = time.time()
     query = request.args.get('query', '')
     if not query:
         return jsonify({"error": "No query parameter provided"}), 400
 
     # Use tokenize_query for search query
+    search_time = time.time()
     SEARCH_TERMS = tokenize_query(query)  # Tokenize the query differently
     search_results, query_doc_count = search_terms(SEARCH_TERMS, inverted_index)
 
@@ -127,41 +127,33 @@ def search_query():
     return jsonify(result_data)
 
 
-def embedded_sort(top_urls):
-    return top_urls
-
-
 def ranking(terms, index, doc_count, top_n):
     # get top n tfidf, already sorted
     top_urls = calculate_frequency_tfidf(terms, index, doc_count, top_n)
-    lock = Lock()
 
     # calcjaccard
-    def compute_jaccard(term, posting):
-        jaccard_score = calculate_jaccard(posting['positions'], terms)  # Replace with your actual field
-        posting['jaccard'] = jaccard_score
-        with lock:  # Ensure thread-safe update
-            for idx, existing_posting in enumerate(top_urls[term]):
-                if existing_posting['id'] == posting['id']:
-                    top_urls[term][idx] = posting
-                    break
+    top_jaccard = []
+    for key, v in top_urls.items():
+        for k in v:
+            jaccard_coefficient = calculate_jaccard(key, terms)
+            k['jaccard'] = jaccard_coefficient
+            # print("V0", k)
 
-    # calcjaccard parallel
-    with ThreadPoolExecutor() as executor:
-        jaccard_futures = {
-            executor.submit(compute_jaccard, term, posting): (term, posting)
-            for term, postings in top_urls.items()
-            for posting in postings
-        }
-        for future in as_completed(jaccard_futures):
-            future.result()  # Wait for all futures to complete
-
-    # Sort by Jaccard within each term's postings
-    for term in top_urls:
-        with lock:  # Ensure thread-safe access
-            top_urls[term].sort(key=lambda x: x.get('jaccard', 0), reverse=True)
-
+    # sort by jaccard
+    print(top_jaccard)
+    for key in top_urls:
+        top_urls[key].sort(key=lambda x: x.get('jaccard', 0), reverse=True)
+    print(top_urls)
     return top_urls
+
+
+# A ^ B / A U B
+def calculate_jaccard(posting, terms):
+    intersection = 0
+    for term in terms:
+        intersection = len(set(term) & set(posting))
+    union = len(terms.Union(posting))
+    return intersection / union
 
 
 def calculate_frequency_tfidf(terms, index, doc_count, top_n=5):
@@ -175,21 +167,11 @@ def calculate_frequency_tfidf(terms, index, doc_count, top_n=5):
             postings = index[term]
             for posting in postings:
                 tf = posting['frq']
-                posting['tf-idf'] = tf * idf[term]  # Compute TF-IDF
+                posting['tfidf'] = tf * idf[term]  # Compute TF-IDF
 
-            sorted_postings = sorted(postings, key=itemgetter('tf-idf'), reverse=True)
+            sorted_postings = sorted(postings, key=itemgetter('tfidf'), reverse=True)
             top_urls[term] = sorted_postings[:top_n]  # Get the top_n postings
-    # print(calculate_jaccard(posting, terms))
     return top_urls
-
-
-# A ^ B / A U B
-def calculate_jaccard(posting, terms):
-    intersection = 0
-    for term in terms:
-        intersection = len(set(term) & set(posting))
-    union = len(posting) + len(terms)
-    return intersection / union
 
 
 def get_html(path):
@@ -199,27 +181,6 @@ def get_html(path):
             term_cache[path] = soup.get_text()
     return term_cache[path]
 
-
-def get_html_tags(path):
-    # this function returns a list of HTML tags corresponding to each token in the document.
-    # The tags are aligned with the tokens (words) in the document text.
-    with open(path, "r", encoding="utf-8") as file:
-        soup = BeautifulSoup(file, "html.parser")
-
-    tags = []
-
-    # Traverse all text elements and associate each token with its parent tag
-    for element in soup.descendants:
-        if isinstance(element, str):  # Only process text nodes
-            text = element.strip()
-            if text:
-                # Tokenize the text into words, split by whitespace
-                tokens = text.split()
-                parent_tag = element.parent.name if element.parent else None
-                # Append the tag to match the number of tokens
-                tags.extend([parent_tag] * len(tokens))
-
-    return tags
 
 def get_token_freq(tokens):
     freq = defaultdict(int)
@@ -249,8 +210,6 @@ def process_file(doc_path, root, doc_count):
     local_index = defaultdict(list)
 
     for position, token in enumerate(tokens):
-        #token_tag = get_html_tags()
-        #weight = tag_weightage.get(token_tag, 1)
         local_index[token].append({
             "id": doc_id,
             "frq": tf[token],
@@ -273,7 +232,7 @@ def process_file(doc_path, root, doc_count):
 
 
 # Indexing the entire collection
-def inv_index(root, max_workers=4, split_count=3):
+def inv_index(root, max_workers=4, split_count=15):
     doc_count = 0
     all_files = []
     for s, _, fs in os.walk(root):
@@ -397,15 +356,6 @@ def search_terms(terms, index):
                     results[term].append(posting)
 
     return results, total_docs
-
-
-def new_search_terms(terms, index):
-    res = defaultdict(list)
-    for t in terms:
-        if t in index:
-            res[t] = heapq.nlargest(5, index[t], key=lambda x: x['tf-idf'])
-    return res
-
 
 # Start the indexing process in the background only if the index doesn't exist
 def load_or_index_documents():
