@@ -182,6 +182,28 @@ def get_html(path):
     return term_cache[path]
 
 
+def get_html_tags(path):
+    # this function returns a list of HTML tags corresponding to each token in the document.
+    # The tags are aligned with the tokens (words) in the document text.
+    with open(path, "r", encoding="utf-8") as file:
+        soup = BeautifulSoup(file, "html.parser")
+
+    tags = []
+
+    # Traverse all text elements and associate each token with its parent tag
+    for element in soup.descendants:
+        if isinstance(element, str):  # Only process text nodes
+            text = element.strip()
+            if text:
+                # Tokenize the text into words, split by whitespace
+                tokens = text.split()
+                parent_tag = element.parent.name if element.parent else None
+                # Append the tag to match the number of tokens
+                tags.extend([parent_tag] * len(tokens))
+
+    return tags
+
+
 def get_token_freq(tokens):
     freq = defaultdict(int)
     for t in tokens:
@@ -196,7 +218,7 @@ def process_file(doc_path, root, doc_count):
     tokens = tokenize_document(doc_text, 4)
     tf = get_token_freq(tokens)
 
-    term_weightage = defaultdict(int)
+    token_tag = get_html_tags(doc_path)
     tag_weightage = {
         "h1": 2,
         "h2": 2,
@@ -209,10 +231,11 @@ def process_file(doc_path, root, doc_count):
     # accumulate term frequencies
     local_index = defaultdict(list)
 
-    for position, token in enumerate(tokens):
+    for position, (token, token_tag) in enumerate(zip(tokens, token_tag)):
+        weight = tag_weightage.get(token_tag, 1)
         local_index[token].append({
             "id": doc_id,
-            "frq": tf[token],
+            "frq": tf[token] * weight,
             "positions": [position]
         })
 
@@ -356,6 +379,7 @@ def search_terms(terms, index):
                     results[term].append(posting)
 
     return results, total_docs
+
 
 # Start the indexing process in the background only if the index doesn't exist
 def load_or_index_documents():
