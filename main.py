@@ -15,7 +15,7 @@ from nltk.stem import PorterStemmer
 
 app = Flask(__name__)
 
-ROOT_DIR = "DEV"
+ROOT_DIR = "ANALYST" # change between DEV and ANALYST
 index_lock = Lock()  # for thread-safe access to inverted index
 inverted_index = defaultdict(list)
 term_cache = {}
@@ -42,8 +42,9 @@ def load_partial_index(part_num):
     return {}
 
 
-# Merge two indexes (used after loading partial indexes)
+# Merge two indexes (used after loading partial indexes), called by merge partial indexes
 def merge_indices(global_index, local_index):
+    #checks if token is already in global index, if not it is added from local index
     with index_lock:
         for token, postings in local_index.items():
             if token not in global_index:
@@ -61,10 +62,11 @@ def tokenize_document(text, ngram=0):
         ngram = len(words) + 1
 
     # Generate non-stemmed n-grams (preserve multi-word phrases)
-    for n in range(2, 5):  # 2-grams and 4-grams
-        ngrams.extend([" ".join(words[i:i + n]) for i in range(len(words) - n + 1)])
+    for n in range(2, 5):  # 2-grams, 3-grams, and 4-grams
+        ngrams.extend([" ".join(words[i : i + n]) for i in range(len(words) - n + 1)])
 
     # Porter stemming process for individual tokens (don't stem n-grams)
+    # can eventually have combinations of stemmed and unstemmed n-grams to cover all possibilities
     token_stemming = []
     try:
         token_stemming = [stemmer.stem(token.text) for token in words]
@@ -72,8 +74,8 @@ def tokenize_document(text, ngram=0):
         token_stemming = [stemmer.stem(token) for token in words]
 
     # Generate stemmed n-grams
-    for n in range(2, 5):  # 2-grams and 4-grams for stemmed words
-        ngrams.extend([" ".join(token_stemming[i:i + n]) for i in range(len(token_stemming) - n + 1)])
+    for n in range(2, 5):  # 2-grams, 3-grams, and 4-grams for stemmed words
+        ngrams.extend([" ".join(token_stemming[i : i + n]) for i in range(len(token_stemming) - n + 1)])
 
     # Combine individual words (non-stemmed) with n-grams (both stemmed and non-stemmed)
     tokens = words + ngrams
@@ -110,7 +112,7 @@ def search_query():
     SEARCH_TERMS = tokenize_query(query)  # Tokenize the query differently
     search_results, query_doc_count = search_terms(SEARCH_TERMS, inverted_index)
 
-    # Calculate the frequency and tf-idf for the search results
+    # Calculate the ranking for the search results
     top_urls = ranking(SEARCH_TERMS, inverted_index, query_doc_count, top_n=5)
     # top_urls = calculate_frequency_idf(SEARCH_TERMS, inverted_index, query_doc_count)
     finish_search = time.time()
@@ -127,6 +129,8 @@ def search_query():
 
 
 def ranking(terms, index, doc_count, top_n):
+    # uses tfidf to initially get most relevant, then sorts with both jaccard and tfidf
+
     # get top n tfidf, already sorted
     top_urls = calculate_frequency_tfidf(terms, index, doc_count, top_n)
 
@@ -139,10 +143,10 @@ def ranking(terms, index, doc_count, top_n):
             # print("V0", k)
 
     # sort by jaccard
-    print(top_jaccard)
+    #print(top_jaccard)
     for key in top_urls:
         top_urls[key].sort(key=lambda x: x.get('jaccard', 0), reverse=True)
-    print(top_urls)
+    #print(top_urls)
     return top_urls
 
 
@@ -174,6 +178,7 @@ def calculate_frequency_tfidf(terms, index, doc_count, top_n=5):
 
 
 def get_html(path):
+    #gets html(without tags)
     if path not in term_cache:
         with open(path, "r", encoding="utf-8") as file:
             soup = BeautifulSoup(file, "html.parser")
@@ -186,7 +191,6 @@ def get_html_tags(path):
     # The tags are aligned with the tokens (words) in the document text.
     with open(path, "r", encoding="utf-8") as file:
         soup = BeautifulSoup(file, "html.parser")
-
     tags = []
 
     # Traverse all text elements and associate each token with its parent tag
@@ -218,6 +222,7 @@ def process_file(doc_path, root, doc_count):
     tf = get_token_freq(tokens)
 
     token_tag = get_html_tags(doc_path)
+    #weights for different html tags
     tag_weightage = {
         "h1": 2,
         "h2": 2,
@@ -262,6 +267,7 @@ def inv_index(root, max_workers=4, split_count=15):
             all_files.append(os.path.join(s, file))
 
     partial_index = defaultdict(list)
+    #with multithreading
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(process_file, file_path, root, doc_count): file_path for file_path in all_files}
         for future in as_completed(futures):
@@ -275,6 +281,7 @@ def inv_index(root, max_workers=4, split_count=15):
                 save_partial_index(partial_index, part_num)
                 partial_index.clear()  # Clear the partial index after saving
 
+            #progress check
             if doc_count % 100 == 0:
                 logging.info(f"Processed {doc_count} files")
 
@@ -286,7 +293,7 @@ def inv_index(root, max_workers=4, split_count=15):
     return doc_count
 
 
-# Merging all partial indexes into the final inverted index
+# Merging all partial indexes into the final inverted index, calls merge_indices
 def merge_partial_indexes():
     global inverted_index
     inverted_index = defaultdict(list)
@@ -305,7 +312,7 @@ def make_file(file_name="inv_idx.json"):
     logging.info(f"Final index saved to {file_name}.")
 
 
-# load the final index
+# load the final index into inverted_index
 def load_index():
     global inverted_index
     if os.path.exists("inv_idx.json"):
@@ -332,6 +339,7 @@ def index_documents():
     logging.info(f"Save time: {end_time - save_time} seconds")
 
 
+#REST api for web gui
 @app.route('/')
 def home():
     return render_template('index.html')
